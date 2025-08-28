@@ -1,0 +1,7 @@
+# Exclude Python build artifacts
+build/
+dist/
+*.egg-info/
+
+# Exclude old directories
+old/

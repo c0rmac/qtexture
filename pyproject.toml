@@ -1,0 +1,36 @@
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "wheel",
+    "pybind11>=2.10"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qtexture"
+version = "0.1.0"
+description = "A library for calculating quantum state texture monotones."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "Cormac Kinsella", email = "cormac.c.00@gmail.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics"
+]
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.8"
+]
+
+[project.optional-dependencies]
+qiskit = ["qiskit>=1.0"]
+qutip  = ["qutip>=4.7"]
+dev    = ["matplotlib", "qiskit", "qutip"]
+
+[tool.setuptools]
+packages = ["qtexture"]

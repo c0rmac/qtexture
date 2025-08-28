@@ -1,0 +1,35 @@
+# Conda environment configuration for the qtexture library project.
+#
+# To create the environment, navigate to your project directory and run:
+# conda env create -f environment.yml
+#
+# To activate the environment, run:
+# conda activate qtexture-env
+
+name: qtexture-env
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Specify the Python version
+  - python>=3.8
+
+  # Core dependencies for the library [cite: 58, 59]
+  - numpy>=1.21
+  - scipy>=1.8
+
+  # Optional package for plotting the validation case study results [cite: 212, 216]
+  - matplotlib
+
+  # Optional packages for interoperability features [cite: 62, 63]
+  - qiskit
+  - qutip
+  - qspin
+
+  - wheel
+  - build
+
+  # Include pip for installing the local package
+  - pip
