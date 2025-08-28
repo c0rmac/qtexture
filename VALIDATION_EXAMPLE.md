@@ -24,7 +24,7 @@ The minimized texture should **smoothly decrease as the dephasing parameter `p` 
 
 ### Actual Result
 
-![Plot showing minimized texture decreasing as the dephasing parameter p increases from 0 to 1.](https://i.imgur.com/8a6bL7d.png)
+![Plot showing minimized texture decreasing as the dephasing parameter p increases from 0 to 1.](./img/validate_dephasing.png)
 
 ---
 
@@ -50,7 +50,7 @@ The non-local texture should be **zero when the state is separable** (at $\theta
 
 ### Actual Result
 
-![Plot showing non-local texture peaking at the point of maximum entanglement, theta = pi/4.](https://i.imgur.com/YwNqJ6c.png)
+![Plot showing non-local texture peaking at the point of maximum entanglement, theta = pi/4.](img/validate_nonlocal_texture.png)
 
 ---
 
@@ -74,7 +74,7 @@ While the texture itself changes smoothly, its **derivative should exhibit a sha
 
 ### Actual Result
 
-![Plot showing the derivative of the purity monotone peaking at the critical point h=1 for the Ising model.](https://i.imgur.com/uVzO5fF.png)
+![Plot showing the derivative of the purity monotone peaking at the critical point h=1 for the Ising model.](./img/run_phase_transition_study.png)
 
 ---
 
@@ -97,7 +97,7 @@ Just like the simpler basis-dependent measure, the **derivative of the minimized
 
 ### Actual Result
 
-![Plot showing the derivative of the minimized non-local texture peaking near the critical point h=1.](https://i.imgur.com/h5r8S2d.png)
+![Plot showing the derivative of the minimized non-local texture peaking near the critical point h=1.](./img/minimize_texture_with_prog_qaoa.png)
 
 ---
 

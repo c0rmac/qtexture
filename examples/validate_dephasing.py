@@ -50,7 +50,7 @@ def main():
             state=dephased_state,
             program_cost=prog_cost,
             max_layers=50,
-            tol_layer=1e-6,
+            tol_layer=1e-4,
             inner_method="L-BFGS-B",
             inner_options={"maxiter": 300, "ftol": 1e-6},  # Relaxed tolerance for numerical stability,
             use_gpu=False

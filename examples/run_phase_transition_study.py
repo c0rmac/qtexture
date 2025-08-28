@@ -45,7 +45,7 @@ def calculate_accuracy_metric(h_values: np.ndarray, texture_values: np.ndarray) 
     }
 
 
-def run_phase_transition_study(n_spins=12, h_values=np.linspace(0, 2, 50)):
+def run_phase_transition_study(n_spins=10, h_values=np.linspace(0, 2, 50)):
     """
     Executes the validation study using the ground state solver.
     """
