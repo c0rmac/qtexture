@@ -15,6 +15,7 @@ from .monotones import calculate_purity_monotone
 
 _BITSTRINGS_CACHE: Dict[int, np.ndarray] = {}
 
+
 def _bitstrings(n: int) -> np.ndarray:
     """
     Vectorized bitstring enumeration (LSB-first), cached per n.
@@ -28,8 +29,10 @@ def _bitstrings(n: int) -> np.ndarray:
     _BITSTRINGS_CACHE[n] = bs
     return bs
 
+
 def _int_to_bits(i: int, n: int) -> np.ndarray:
     return np.fromiter(((i >> k) & 1 for k in range(n)), count=n, dtype=np.uint8)
+
 
 def _enumerate_bitstrings(n: int) -> np.ndarray:
     # Shape: (2^n, n), LSB-first; cheap and deterministic
@@ -38,6 +41,7 @@ def _enumerate_bitstrings(n: int) -> np.ndarray:
     for i in range(N):
         out[i] = _int_to_bits(i, n)
     return out
+
 
 def _compile_program_cost(n_qubits: int, program: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
     """
@@ -53,6 +57,7 @@ def _compile_program_cost(n_qubits: int, program: Callable[[np.ndarray], np.ndar
         raise ValueError("Program must return a vector of length 2^n.")
     return c_vals
 
+
 def _apply_diagonal_phase_to_density(rho: np.ndarray, phases: np.ndarray) -> np.ndarray:
     """
     Applies ρ -> D ρ D† where D = diag(phases).
@@ -61,6 +66,7 @@ def _apply_diagonal_phase_to_density(rho: np.ndarray, phases: np.ndarray) -> np.
     """
     return (phases[:, None] * rho) * np.conj(phases)[None, :]
 
+
 def _rx(theta: float) -> np.ndarray:
     # Rx(theta) = exp(-i theta X / 2) = [[cos(theta/2), -i sin(theta/2)],
     #                                    [-i sin(theta/2), cos(theta/2)]]
@@ -68,6 +74,7 @@ def _rx(theta: float) -> np.ndarray:
     s = np.sin(theta / 2.0)
     return np.array([[c, -1j * s],
                      [-1j * s, c]], dtype=np.complex128)
+
 
 def _apply_1q_unitary_to_density(rho: np.ndarray, U: np.ndarray, k: int, n: int, dims: Tuple[int, ...]) -> np.ndarray:
     """
@@ -94,13 +101,22 @@ def _apply_1q_unitary_to_density(rho: np.ndarray, U: np.ndarray, k: int, n: int,
 @dataclass
 class ProgramCost:
     """
-    Program-based cost oracle c(x).
-    Provide either:
-      - program: callable mapping (2^n, n) bitstrings -> (2^n,) costs
-    or:
-      - c_vals: precomputed costs of length 2^n.
+    Encapsulates a classical cost function `c(x)` for the Prog-QAOA optimizer.
 
-    normalize=True scales max|c| to 1 for stable γ scaling.
+    This class serves as a cost oracle. The cost function is defined over computational
+    basis states (bitstrings) and is compiled into a diagonal Hamiltonian `H_C = sum_x c(x)|x><x|`.
+    The cost layer of the QAOA ansatz is then `U_C(gamma) = exp(-i * gamma * H_C)`.
+
+    Provide either a callable `program` or pre-computed `c_vals`.
+
+    Attributes:
+        n_qubits: The number of qubits the cost function applies to.
+        program: A callable that takes a `(2^n, n)` array of bitstrings and
+            returns a `(2^n,)` array of corresponding costs.
+        c_vals: A pre-computed array of costs for each of the `2^n` basis states.
+        normalize: If True, the cost values `c(x)` are scaled such that `max(|c(x)|) = 1`.
+            This helps stabilize the optimization by keeping the `gamma` parameters
+            on a consistent scale.
     """
     n_qubits: int
     program: Optional[Callable[[np.ndarray], np.ndarray]] = None
@@ -112,6 +128,18 @@ class ProgramCost:
     _scale: float = 1.0
 
     def compile(self) -> np.ndarray:
+        """
+        Computes and caches the cost vector from the provided program or c_vals.
+
+        This method is called internally by the ansatz to get the diagonal values for the
+        cost Hamiltonian.
+
+        Returns:
+            A NumPy array of shape `(2^n,)` containing the cost for each basis state.
+
+        Raises:
+            ValueError: If the program or c_vals returns a vector of incorrect shape.
+        """
         if self._compiled is not None:
             return self._compiled
 
@@ -143,20 +171,40 @@ class ProgramCost:
 
     @property
     def scale(self) -> float:
+        """The scaling factor applied to the original costs if normalize=True."""
         # 1.0 for zero/normalized costs, else original max-abs scale
         return self._scale
 
 
 class ProgramBasedAnsatz:
     """
-    Alternating layers: U(θ) = ∏_{l=1..p} [ U_M(β_l) · U_C(γ_l) ], right-applied to ρ.
+    Implements the Program-Based QAOA (Prog-QAOA) ansatz for density matrices.
 
-    - Cost layer U_C(γ) = diag( exp(-i γ c(x)) ) compiled from classical program c(x).
-    - Mixer U_M(β) = ∏_i exp(-i β X_i) = ⊗_i Rx_i(2β).
+    The ansatz applies alternating layers of a cost operator and a mixer operator
+    to an initial density matrix `rho0`. The evolution is given by:
+    `rho_p = U(p) * rho0 * U(p)^dagger`, where `U(p) = product_{l=1..p} [U_M(beta_l) * U_C(gamma_l)]`.
 
-    Supports limiting action to a subset of qubits via 'subsystems' (indices).
+    - Cost layer `U_C(gamma)`: A diagonal unitary `diag(exp(-i * gamma * c(x)))`, where `c(x)`
+      is derived from a classical program.
+    - Mixer layer `U_M(beta)`: A transverse field mixer `product_i exp(-i * beta * X_i)`,
+      where `X_i` is the Pauli-X operator on qubit `i`.
+
+    Attributes:
+        n (int): Total number of qubits in the system.
+        c_vals (np.ndarray): The compiled cost vector from the `ProgramCost` object.
     """
+
     def __init__(self, n_qubits: int, program_cost: ProgramCost, subsystems: Optional[Sequence[int]] = None):
+        """
+        Initializes the Prog-QAOA ansatz.
+
+        Args:
+            n_qubits: The total number of qubits.
+            program_cost: A `ProgramCost` object defining the cost function.
+            subsystems: An optional sequence of qubit indices. If provided, the mixer
+                operator `U_M` will only be applied to these qubits. If None, the mixer
+                is applied to all qubits.
+        """
         self.n = n_qubits
         self.c_vals = program_cost.compile()  # cached
         # Subsystem mask and indices
@@ -171,6 +219,21 @@ class ProgramBasedAnsatz:
         self._dims = tuple(2 for _ in range(self.n))
 
     def apply_layers(self, rho0: np.ndarray, betas: np.ndarray, gammas: np.ndarray, use_gpu: bool) -> np.ndarray:
+        """
+        Applies all `p` layers of the QAOA ansatz to an initial density matrix.
+
+        Args:
+            rho0: The initial `(2^n, 2^n)` density matrix.
+            betas: A NumPy array of `p` mixer angles.
+            gammas: A NumPy array of `p` cost angles.
+            use_gpu: A boolean flag to enable GPU acceleration (if available).
+
+        Returns:
+            The final density matrix after applying `p` layers of the ansatz.
+
+        Raises:
+            ValueError: If the shapes of betas and gammas do not match.
+        """
         if betas.shape != gammas.shape:
             raise ValueError("betas and gammas must match length p.")
 
@@ -178,17 +241,9 @@ class ProgramBasedAnsatz:
         dim = rho0.shape[0]
         GPU_DIM_THRESHOLD = 4096  # tune experimentally
 
-        #use_gpu = (
-        #        K.HAS_METAL
-        #        and hasattr(K, "apply_layers_metal_f32")
-        #        and dim >= GPU_DIM_THRESHOLD
-        #)
-
-        #use_gpu = True
         use_small_solution = False
 
         dt = np.complex64 if use_gpu else np.complex128
-        #rho = np.ascontiguousarray(rho0, dtype=dt)
 
         if use_gpu and use_small_solution and dim <= 64:  # Use specialized kernel for n <= 6 qubits
             rho = np.ascontiguousarray(rho0, dtype=np.complex64)
@@ -205,30 +260,43 @@ class ProgramBasedAnsatz:
             return rho.astype(dt, copy=False)
 
         elif use_gpu:  # Use original kernel for n > 6 qubits
-            # Run the entire stack on GPU with a single wait
             betas = np.asarray(betas, dtype=np.float32, order="C")
             gammas = np.asarray(gammas, dtype=np.float32, order="C")
             c_vals = np.asarray(self.c_vals, dtype=np.float64, order="C")
             qs = np.asarray(self._active, dtype=np.int32)
-
             rho = np.ascontiguousarray(rho0, dtype=dt)
-            # rho = rho0.copy()
+
             K.apply_layers_metal_f32(rho, betas, gammas, c_vals, qs, int(self.n))
             return rho
 
-        # Ensure types are correct for the C++ extension
+        # Fallback to the high-performance C++ CPU implementation
         return K.evolve_all_layers_cpu_best(
-                rho0,
-                betas,
-                gammas,
-                self.c_vals,
-                self._active
+            rho0,
+            betas,
+            gammas,
+            self.c_vals,
+            self._active
         )
+
 
 # ========= Optimizer with adaptive layering =========
 
 @dataclass
 class ProgQAOAResult:
+    """
+    Stores the results of a `ProgQAOAOptimizer` run.
+
+    Attributes:
+        fun (float): The final minimized objective function value.
+        x (np.ndarray): The optimal parameters `[betas, gammas]` found by the optimizer.
+        p (int): The number of QAOA layers `p` at which the optimization terminated.
+        history (List[Dict[str, Any]]): A log of the optimization progress, with entries
+            for each layer `p` containing the best function value found.
+        message (str): A summary message describing the termination reason.
+        success (bool): A boolean flag indicating whether the optimization succeeded.
+        rho_history (List[float]): A list to store intermediate density matrix states or values,
+            if logging is implemented within the objective function.
+    """
     fun: float
     x: np.ndarray
     p: int
@@ -237,37 +305,76 @@ class ProgQAOAResult:
     success: bool
     rho_history: List[float]
 
+
 class ProgQAOAOptimizer:
     """
-    Adaptive layering with robust defaults:
-      - Identity baseline guard
-      - Near-zero deterministic init
-      - Tiny-grid multi-start for new layer
-      - Freeze-then-refine growth
-    """
-    def __init__(
-        self,
-        objective: Optional[Callable[[QuantumState], float]] = None,
-        max_layers: int = 6,
-        tol_layer: float = 1e-4,
-        patience: int = 1,
-        inner_optimizer: Optional[Any] = None,  # ACCEPTS AN OPTIMIZER OBJECT
-        inner_method: str = "L-BFGS-B",  # Fallback for SciPy
+    An adaptive optimizer for the Program-Based QAOA (Prog-QAOA).
 
-        inner_options: Optional[Dict[str, Any]] = None,
-        random_seed: Optional[int] = None,
-        identity_baseline: bool = True,
-        init_mode: str = "near_zero",
-        init_scale: float = 5e-3,
-        multistart_grid: Sequence[float] = (-2e-2, 0.0, 2e-2),
-        freeze_then_refine: bool = True,
-        use_gpu: bool = False,
+    This optimizer implements a layer-wise growth strategy to find the optimal
+    parameters for the Prog-QAOA ansatz. It starts with a small number of layers
+    and iteratively adds new layers, using the optimized parameters from the
+    previous step as a starting point. This approach is often more effective and
+    efficient than optimizing all parameters for a deep circuit from scratch.
+
+    The class includes several heuristics for robustness, such as multi-start
+    initializations for new layers and a "freeze-then-refine" strategy.
+    """
+
+    def __init__(
+            self,
+            objective: Optional[Callable[[QuantumState], float]] = None,
+            max_layers: int = 6,
+            tol_layer: float = 1e-4,
+            patience: int = 1,
+            inner_optimizer: Optional[Any] = None,
+            inner_method: str = "L-BFGS-B",
+            inner_options: Optional[Dict[str, Any]] = None,
+            random_seed: Optional[int] = None,
+            identity_baseline: bool = True,
+            init_mode: str = "near_zero",
+            init_scale: float = 5e-3,
+            multistart_grid: Sequence[float] = (-2e-2, 0.0, 2e-2),
+            freeze_then_refine: bool = True,
+            use_gpu: bool = False,
     ):
+        """
+        Initializes the ProgQAOAOptimizer.
+
+        Args:
+            objective: The function to minimize. It should accept a `QuantumState` object
+                and return a float. Defaults to `calculate_purity_monotone`.
+            max_layers: The maximum number of QAOA layers (`p`) to grow to.
+            tol_layer: The minimum improvement in the objective function required to
+                justify adding a new layer.
+            patience: The number of consecutive layers with no improvement (`< tol_layer`)
+                to tolerate before stopping the optimization.
+            inner_optimizer: An optional custom optimizer object (e.g., from Qiskit) that has a
+                `.minimize(fun, x0, bounds)` method. If provided, this is used for the
+                classical optimization loop.
+            inner_method: The name of the SciPy optimizer to use if `inner_optimizer` is not
+                provided (e.g., "L-BFGS-B", "Nelder-Mead", "COBYLA").
+            inner_options: A dictionary of options to pass to the inner SciPy optimizer
+                (e.g., `{'maxiter': 500, 'ftol': 1e-9}`).
+            random_seed: An optional seed for the random number generator to ensure
+                reproducibility.
+            identity_baseline: If True, the optimizer ensures the final value is never
+                worse than the objective value of the initial state (at `p=0`).
+            init_mode: The strategy for initializing parameters. Can be "near_zero",
+                "ramp", or "small_random".
+            init_scale: The scale factor for the initial parameter values.
+            multistart_grid: A sequence of initial values for the new `(beta, gamma)` pair
+                when a layer is added. The optimizer tries each combination to avoid
+                poor local minima.
+            freeze_then_refine: If True, when adding a new layer, first optimize only the
+                new parameters while keeping the old ones fixed ("frozen"), then refine all
+                parameters together. This can improve convergence stability.
+            use_gpu: If True, attempts to use GPU acceleration for the state evolution.
+        """
         self.objective = objective or calculate_purity_monotone
         self.max_layers = max_layers
         self.tol_layer = tol_layer
         self.patience = patience
-        self.inner_optimizer = inner_optimizer  # STORE THE OPTIMIZER
+        self.inner_optimizer = inner_optimizer
         self.inner_method = inner_method
         self.inner_options = inner_options or {"maxiter": 500, "ftol": 1e-12}
         self.rng = np.random.default_rng(random_seed)
@@ -281,23 +388,37 @@ class ProgQAOAOptimizer:
 
     @staticmethod
     def _pack(betas: np.ndarray, gammas: np.ndarray) -> np.ndarray:
+        """Concatenates beta and gamma parameters into a single vector."""
         return np.concatenate([betas, gammas])
 
     @staticmethod
     def _unpack(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Splits a parameter vector into separate beta and gamma arrays."""
         half = x.size // 2
         return x[:half], x[half:]
 
     def _objective_wrapped(self, x: np.ndarray, ansatz: ProgramBasedAnsatz, rho0: np.ndarray) -> float:
+        """
+        A wrapper for the objective function to be passed to the classical optimizer.
+
+        This function unpacks the parameter vector `x`, applies the ansatz, and
+        evaluates the user-defined objective.
+        """
         betas, gammas = self._unpack(x)
         rho = ansatz.apply_layers(rho0, betas, gammas, self.use_gpu)
         return self.objective(QuantumState(rho))
 
     def _bounds(self, p: int) -> List[Tuple[float, float]]:
+        """Generates the parameter bounds `(-pi, pi)` for `p` layers."""
         return [(-np.pi, np.pi)] * (2 * p)
 
     def _minimize(self, fun, x0, bounds, args) -> OptimizeResult:
-        """Internal dispatcher for the optimization backend."""
+        """
+        Internal dispatcher for the classical optimization backend.
+
+        This method selects whether to use a provided custom optimizer object
+        or a standard SciPy optimization method.
+        """
         # --- NEW: LOGIC TO USE A CUSTOM OPTIMIZER LIKE SPSA ---
         if self.inner_optimizer is not None:
             # Qiskit optimizers expect a function with a single argument (the parameters)
@@ -328,6 +449,9 @@ class ProgQAOAOptimizer:
                             bounds=bounds)
 
     def _init_params(self, p: int) -> np.ndarray:
+        """
+        Initializes QAOA parameters for `p` layers based on the `init_mode`.
+        """
         if self.init_mode == "near_zero":
             betas = np.full(p, self.init_scale)
             gammas = np.full(p, self.init_scale)
@@ -341,15 +465,28 @@ class ProgQAOAOptimizer:
         return self._pack(betas, gammas)
 
     def _identity_value(self, state: QuantumState) -> float:
+        """Calculates the objective for the initial, untransformed state."""
         return self.objective(state)
 
     def fit(
-        self,
-        state: QuantumState,
-        program_cost: ProgramCost,
-        subsystems: Optional[Sequence[int]] = None,
-        init_p: int = 1,
+            self,
+            state: QuantumState,
+            program_cost: ProgramCost,
+            subsystems: Optional[Sequence[int]] = None,
+            init_p: int = 1,
     ) -> ProgQAOAResult:
+        """
+        Runs the adaptive layer-wise optimization process.
+
+        Args:
+            state: The initial `QuantumState` to be optimized.
+            program_cost: The `ProgramCost` object defining the problem.
+            subsystems: Optional sequence of qubit indices to apply the mixer to.
+            init_p: The initial number of layers to start the optimization from.
+
+        Returns:
+            A `ProgQAOAResult` object containing the results of the optimization.
+        """
         n = int(np.log2(state.data.shape[0]))
         ansatz = ProgramBasedAnsatz(n_qubits=n, program_cost=program_cost, subsystems=subsystems)
         rho0 = state.data
@@ -393,10 +530,12 @@ class ProgQAOAOptimizer:
                         x_mid = x_new0.copy()
                         x_mid[-2:] = res_free.x
                         # Short global refine
-                        res_ref = self._minimize(self._objective_wrapped, x_mid, self._bounds(p_new), args=(ansatz, rho0))
+                        res_ref = self._minimize(self._objective_wrapped, x_mid, self._bounds(p_new),
+                                                 args=(ansatz, rho0))
                         val, x_cand = float(res_ref.fun), res_ref.x
                     else:
-                        res_ref = self._minimize(self._objective_wrapped, x_new0, self._bounds(p_new), args=(ansatz, rho0))
+                        res_ref = self._minimize(self._objective_wrapped, x_new0, self._bounds(p_new),
+                                                 args=(ansatz, rho0))
                         val, x_cand = float(res_ref.fun), res_ref.x
 
                     if val < best_local_val:
@@ -417,34 +556,75 @@ class ProgQAOAOptimizer:
 
         final_val = min(best_val, floor_val) if self.identity_baseline else best_val
         msg = f"Stopped at p={p} with best fun={final_val:.6g}"
-        return ProgQAOAResult(fun=float(final_val), x=best_x, p=p, history=history, message=msg, success=True, rho_history=self.rho_history)
+        return ProgQAOAResult(fun=float(final_val), x=best_x, p=p, history=history, message=msg, success=True,
+                              rho_history=self.rho_history)
 
 
 # ========= Convenience wrapper for texture minimization =========
 
 def minimize_texture(
-    state: QuantumState,
-    program_cost: ProgramCost,
-    subsystems: Optional[Sequence[int]] = None,
-    max_layers: int = 6,
-    tol_layer: float = 1e-4,
-    patience: int = 1,
-    inner_optimizer: Optional[Any] = None,  # ACCEPTS AN OPTIMIZER OBJECT
-    inner_method: str = "L-BFGS-B",  # Fallback for SciPy
-    inner_options: Optional[Dict[str, Any]] = None,
-    random_seed: Optional[int] = None,
-    init_mode: str = "small_random",
-    use_gpu: bool = False,
+        state: QuantumState,
+        program_cost: ProgramCost,
+        subsystems: Optional[Sequence[int]] = None,
+        max_layers: int = 6,
+        tol_layer: float = 1e-4,
+        patience: int = 1,
+        inner_optimizer: Optional[Any] = None,
+        inner_method: str = "L-BFGS-B",
+        inner_options: Optional[Dict[str, Any]] = None,
+        random_seed: Optional[int] = None,
+        init_mode: str = "small_random",
+        init_scale: float = 5e-3,
+        use_gpu: bool = False,
 ) -> ProgQAOAResult:
     """
-    Minimize the texture-based purity monotone using Program-Based QAOA with adaptive layering.
+    Minimizes the texture-based purity monotone using Program-Based QAOA with adaptive layering.
 
-    Built-in robustness and low-level optimisations:
-      - Identity baseline floor
-      - Near-zero deterministic init
-      - Tiny-grid multistart & freeze-then-refine for layer growth
-      - Cached bitstrings and program cost
-      - In-place cost phases, precomputed dims/active indices
+    This function is a high-level wrapper around the `ProgQAOAOptimizer`. It seeks to find a
+    unitary transformation `U` (parameterized by the QAOA ansatz) that minimizes the
+    texture of the resulting state `U * rho * U^dagger`. This corresponds to finding a
+    measurement basis where the state appears "smoothest," revealing its intrinsic,
+    basis-independent properties.
+
+    The function incorporates robust heuristics and performance optimizations:
+      - An identity baseline floor to ensure the result is an improvement.
+      - User-configurable initial parameters to start the optimization.
+      - A multi-start grid search and freeze-then-refine strategy for stable layer growth.
+      - High-performance C++/GPU kernels for the quantum state evolution.
+
+    Args:
+        state: The initial `QuantumState` whose texture is to be minimized.
+        program_cost: A `ProgramCost` object defining the classical cost function that
+            guides the QAOA optimization.
+        subsystems: If provided, the optimization is restricted to applying basis
+            transformations (mixers) only on this subset of qubits.
+        max_layers: The maximum number of QAOA layers to use. The optimizer may stop
+            earlier if convergence is reached.
+        tol_layer: The improvement threshold for adding a new QAOA layer. If the best
+            objective value improves by less than this amount, it's considered converged.
+        patience: The number of layers to continue trying even after improvement falls
+            below `tol_layer`, before finally stopping.
+        inner_optimizer: An optional pre-configured optimizer object (e.g., from Qiskit's
+            library) to be used for the classical parameter updates.
+        inner_method: If `inner_optimizer` is not provided, this string specifies which
+            `scipy.optimize.minimize` method to use (e.g., 'L-BFGS-B', 'Nelder-Mead').
+        inner_options: A dictionary of options passed directly to the inner `scipy`
+            optimizer (e.g., `{'maxiter': 1000}`).
+        random_seed: A seed for the random number generator to ensure the optimization
+            is reproducible.
+        init_mode: The strategy for initializing QAOA parameters. Valid options are
+            'small_random' (default), 'near_zero', and 'ramp'.
+        init_scale: The magnitude of the initial parameters. For 'small_random', this
+            is the standard deviation of the normal distribution.
+        use_gpu: Set to `True` to enable GPU acceleration for large quantum states. Note:
+            GPU calculations use single-precision (`complex64`) for speed, while the CPU
+            uses double-precision (`complex128`). This trade-off means that GPU runs
+            may require a higher `max_layers` and a smaller `tol_layer` to converge
+            to the same level of accuracy as a CPU run.
+
+    Returns:
+        A `ProgQAOAResult` object containing the optimized function value, parameters,
+        and other details of the optimization run.
     """
     # Infer n and ensure ProgramCost matches
     dim = state.data.shape[0]
@@ -482,7 +662,7 @@ def minimize_texture(
         random_seed=random_seed,
         identity_baseline=True,
         init_mode=init_mode,
-        init_scale=5e-3,
+        init_scale=init_scale,
         multistart_grid=(-2e-2, 0.0, 2e-2),
         freeze_then_refine=True,
         use_gpu=use_gpu
