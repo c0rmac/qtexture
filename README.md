@@ -163,7 +163,7 @@ Here is a more advanced example demonstrating all available parameters to give y
 # This example uses the same state and cost function as before.
 # We are using SciPy's 'Nelder-Mead' for demonstration, but 'L-BFGS-B' is the default.
 
-full_result = qt.minimize_texture_with_prog_qaoa(
+full_result = qt.minimize_texture(
     # --- Core Parameters ---
     state=w_state,
     program_cost=cost_function,
@@ -205,7 +205,7 @@ To enable this, simply set the `use_gpu=True` flag.
 # and a stricter tolerance to compensate for the lower precision.
 
 print("Optimizing W state on GPU...")
-result_gpu = qt.minimize_texture_with_prog_qaoa(
+result_gpu = qt.minimize_texture(
     state=w_state,
     program_cost=cost_function,
     max_layers=8,      # Using more layers for the GPU run
